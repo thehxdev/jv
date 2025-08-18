@@ -36,7 +36,7 @@ jv_context_restore:
 	movq	0x28(%rdi), %r15
 	movq	0x30(%rdi), %rsp
 
-	# use %r10 as a helper register
+	# use r10 as a helper register
 	movq	%rdi, %r10
 
 	# If `first_run` field in `jv_context_t` is true, load
@@ -45,23 +45,17 @@ jv_context_restore:
 	cmpq	$1, 0x40(%r10)
 	jne		.skip_args
 
-	# load the `args` field location to %r10 for
-	# easier access. but before that save %r10
-	# in the stack (must be popped at the end).
-	pushq	%r10
-	leaq	0x48(%r10), %r10
-
-	movq	0x00(%r10), %rdi
-	movq	0x08(%r10), %rsi
-	movq	0x10(%r10), %rdx
-	movq	0x18(%r10), %rcx
-	movq	0x20(%r10), %r8
-	movq	0x28(%r10), %r9
+	movq	$0x48, %rax
+	movq	0x00(%r10, %rax), %rdi
+	movq	0x08(%r10, %rax), %rsi
+	movq	0x10(%r10, %rax), %rdx
+	movq	0x18(%r10, %rax), %rcx
+	movq	0x20(%r10, %rax), %r8
+	movq	0x28(%r10, %rax), %r9
 
 	# set `first_run` to 0 and restore %r10
 	movq	$0, 0x40(%r10)
-	popq	%r10
 
 .skip_args:
-	# xorq	%rax, %rax			# return 0 (for now) as the return value of jv_yield
+	xorq	%rax, %rax			# return 0 (for now) as the return value of jv_yield
 	jmp		*0x38(%r10)
