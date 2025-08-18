@@ -54,10 +54,10 @@ jv_context_restore:
 	movq	0x18(%rax), %rcx
 	movq	0x20(%rax), %r8
 	movq	0x28(%rax), %r9
+	popq	%rax
 
 	# set `first_run` to NULL
 	movq	$0, 0x40(%rax)
-	popq	%rax
 
 .skip_args:
 	jmp		*0x38(%rax)
