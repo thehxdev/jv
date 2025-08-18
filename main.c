@@ -4,8 +4,8 @@
     #error "At this point, only Linux is supported"
 #endif
 
-// helper macro to define an argument
-#define a(v) ((void*)(v))
+// helper macro to pass a non-pointer argument
+#define _(v) ((void*)(v))
 
 void counter(int n) {
 	int i;
@@ -20,9 +20,9 @@ int main(void) {
 	jv_init();
 
 	// register coroutines
-	jv_run(counter, (void*[JV_ARGS_LIMIT]) { a(0)  });
-	jv_run(counter, (void*[JV_ARGS_LIMIT]) { a(5)  });
-	jv_run(counter, (void*[JV_ARGS_LIMIT]) { a(10) });
+	jv_run(counter, jv_args( _(0)  ));
+	jv_run(counter, jv_args( _(5)  ));
+	jv_run(counter, jv_args( _(10) ));
 
 	while (jv_has_active())
 		jv_yield();

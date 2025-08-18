@@ -1,6 +1,9 @@
 #define JV_STACK_SIZE 4096
 #define JV_ARGS_LIMIT 6
 
+#define jv_args(...) \
+	((void*[JV_ARGS_LIMIT]){ __VA_ARGS__ })
+
 #define jv_concat_(A, B) A##B
 #define jv_concat(A, B) jv_concat_(A, B)
 #define jv_static_assert(cond, id) \
