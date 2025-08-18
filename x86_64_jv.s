@@ -35,29 +35,29 @@ jv_context_restore:
 	movq	0x20(%rdi), %r14
 	movq	0x28(%rdi), %r15
 	movq	0x30(%rdi), %rsp
-	jmp		*0x38(%rdi)
+	movq	%rdi, %rax
 
+	# If `first_run` field in `jv_context_t` is true,
+	# load the function's arguments befor jumping there.
+	# Otherwise just do the call.
+	cmpq	$1, 0x40(%rax)
+	jne		.skip_args
+	pushq	%rax
 
-#  	.global jv_run_
-#  	.type	jv_run_, @function
-#  	# void jv_run_(void *fn %rdi, void *args[6] %rsi)
-# jv_run_:
-#  	# if args is NULL, this means funtion accepts no
-#  	# parameter so just do the call
-#  	test	%rsi, %rsi
-#  	je		.do_call
-#  
-#     # save the function to call and args in temporary registers
-#  	movq	%rdi, %r12
-#  	movq	%rsi, %r14
-#  
-#  	movq	0x00(%r14), %rdi
-#  	movq	0x08(%r14), %rsi
-#  	movq	0x10(%r14), %rdx
-#  	movq	0x18(%r14), %rcx
-#  	movq	0x20(%r14), %r8
-#  	movq	0x28(%r14), %r9
-#  
-# .do_call:
-#  	call	*%r12
-#  	ret
+	# load the `args` field location to %rax
+	# for easier access
+	leaq	0x48(%rax), %rax
+
+	movq	0x00(%rax), %rdi
+	movq	0x08(%rax), %rsi
+	movq	0x10(%rax), %rdx
+	movq	0x18(%rax), %rcx
+	movq	0x20(%rax), %r8
+	movq	0x28(%rax), %r9
+
+	# set `first_run` to NULL
+	movq	$0, 0x40(%rax)
+	popq	%rax
+
+.skip_args:
+	jmp		*0x38(%rax)

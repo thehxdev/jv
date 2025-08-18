@@ -1,6 +1,14 @@
 #define JV_STACK_SIZE 4096
 #define JV_ARGS_LIMIT 6
 
+#define jv_concat_(A, B) A##B
+#define jv_concat(A, B) jv_concat_(A, B)
+#define jv_static_assert(cond, id) \
+	extern char jv_concat(id, __LINE__)[ ((cond)) ? 1 : -1 ]
+
+// static assert for sizeof(void*)
+jv_static_assert(sizeof(void*) == 8, assert_sizeof_pointer);
+
 enum {
 	JV_R_RBX,
 	JV_R_RBP,
@@ -16,13 +24,15 @@ enum {
 typedef struct jv_context {
 	// this field MUST be the first in this struct
 	uintptr_t regs[JV_R_COUNT];
+	uintptr_t first_run;
+	void *args[JV_ARGS_LIMIT];
 	struct jv_context *next, *prev;
 	unsigned char stack_end[JV_STACK_SIZE];
 } jv_context_t;
 
+static size_t actives     = 0;
 static jv_context_t *curr = NULL;
 static jv_context_t *tail = NULL;
-static size_t actives     = 0;
 
 extern void jv_yield(void);
 extern void jv_context_store(jv_context_t *ctx, void *rsp, void *rip);
@@ -58,11 +68,12 @@ int jv_init(void) {
 }
 
 void jv_run(void *fn, void *args[JV_ARGS_LIMIT]) {
-	// for now ignore argument. can't find a solution for handling them
-	(void)args;
-
 	jv_context_t *new = calloc(1, sizeof(*new));
 	new->regs[JV_R_RIP] = (uintptr_t) fn;
+	if (args) {
+		new->first_run = 1;
+		memcpy(new->args, args, sizeof(void*) * JV_ARGS_LIMIT);
+	}
 
 	uintptr_t *rsp = (uintptr_t*) &new->stack_end[JV_STACK_SIZE];
 	// store the return address for coroutine's `ret` instruction

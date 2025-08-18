@@ -4,40 +4,25 @@
     #error "At this point, only Linux is supported"
 #endif
 
-void counter3(void) {
-	int i;
-	for (i = 20; i < 30; ++i) {
-		printf("%d\n", i);
-		jv_yield();
-	}
-	printf("counter3 end\n");
-}
+// helper macro to define an argument
+#define a(v) ((void*)(v))
 
-void counter2(void) {
+void counter(int n) {
 	int i;
-	for (i = 10; i < 20; ++i) {
+	for (i = n; i < (n + 5); ++i) {
 		printf("%d\n", i);
 		jv_yield();
 	}
-	printf("counter2 end\n");
-}
-
-void counter1(void) {
-	int i;
-	for (i = 0; i < 10; ++i) {
-		printf("%d\n", i);
-		jv_yield();
-	}
-	printf("counter1 end\n");
+	printf("counter %d end\n", n);
 }
 
 int main(void) {
 	jv_init();
 
 	// register coroutines
-	jv_run(counter1, NULL);
-	jv_run(counter2, NULL);
-	jv_run(counter3, NULL);
+	jv_run(counter, (void*[JV_ARGS_LIMIT]) { a(0)  });
+	jv_run(counter, (void*[JV_ARGS_LIMIT]) { a(5)  });
+	jv_run(counter, (void*[JV_ARGS_LIMIT]) { a(10) });
 
 	while (jv_has_active())
 		jv_yield();
