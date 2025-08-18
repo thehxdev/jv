@@ -7,3 +7,6 @@ Just use the build script.
 ``` shell
 ./build.sh
 ```
+
+## Unique features
+- You can pass up to 6 arguments to each coroutine that you run.
