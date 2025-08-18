@@ -35,29 +35,33 @@ jv_context_restore:
 	movq	0x20(%rdi), %r14
 	movq	0x28(%rdi), %r15
 	movq	0x30(%rdi), %rsp
-	movq	%rdi, %rax
 
-	# If `first_run` field in `jv_context_t` is true,
-	# load the function's arguments befor jumping there.
+	# use %r10 as a helper register
+	movq	%rdi, %r10
+
+	# If `first_run` field in `jv_context_t` is true, load
+	# the function's arguments befor jumping there.
 	# Otherwise just do the call.
-	cmpq	$1, 0x40(%rax)
+	cmpq	$1, 0x40(%r10)
 	jne		.skip_args
-	pushq	%rax
 
-	# load the `args` field location to %rax
-	# for easier access
-	leaq	0x48(%rax), %rax
+	# load the `args` field location to %r10 for
+	# easier access. but before that save %r10
+	# in the stack (must be popped at the end).
+	pushq	%r10
+	leaq	0x48(%r10), %r10
 
-	movq	0x00(%rax), %rdi
-	movq	0x08(%rax), %rsi
-	movq	0x10(%rax), %rdx
-	movq	0x18(%rax), %rcx
-	movq	0x20(%rax), %r8
-	movq	0x28(%rax), %r9
-	popq	%rax
+	movq	0x00(%r10), %rdi
+	movq	0x08(%r10), %rsi
+	movq	0x10(%r10), %rdx
+	movq	0x18(%r10), %rcx
+	movq	0x20(%r10), %r8
+	movq	0x28(%r10), %r9
 
-	# set `first_run` to NULL
-	movq	$0, 0x40(%rax)
+	# set `first_run` to 0 and restore %r10
+	movq	$0, 0x40(%r10)
+	popq	%r10
 
 .skip_args:
-	jmp		*0x38(%rax)
+	# xorq	%rax, %rax			# return 0 (for now) as the return value of jv_yield
+	jmp		*0x38(%r10)
