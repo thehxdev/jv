@@ -13,6 +13,12 @@
 jv_static_assert(sizeof(void*) == 8, assert_sizeof_pointer);
 
 enum {
+    JV_NONE,
+    JV_READ,
+    JV_WRITE
+};
+
+enum {
     JV_R_RBX,
     JV_R_RBP,
     JV_R_R12,
@@ -37,7 +43,10 @@ static size_t actives     = 0;
 static jv_context_t *curr = NULL;
 static jv_context_t *tail = NULL;
 
-extern void jv_yield(void);
+extern void jv_wait_io(int fd, int events);
+// extern void jv_yield(void);
+#define jv_yield() jv_wait_io(-1, JV_NONE)
+
 extern void jv_context_store(jv_context_t *ctx, void *rsp, void *rip);
 extern void jv_context_restore(jv_context_t *ctx);
 
