@@ -14,6 +14,8 @@
 #define BUFFER_SIZE 1024
 #define async __attribute__((noinline))
 
+#if 0
+// This section if unfinished
 static sig_atomic_t running = 1;
 
 async void echo_routine(int clientfd)
@@ -90,17 +92,28 @@ async void __main(void)
 
     close(serverfd);
 }
+#endif
 
-#define ntask 3
+#define ntask 2
 
-async void counter(long n)
+async void dummy(void)
 {
-    if (n < 0)
-        return;
-    while (n--) {
-        printf("%d ", n);
+    int i = 3;
+    while (i--) {
+        puts("an async dummy function");
         jv_yield;
     }
+}
+
+async void counter(long id, long n)
+{
+    // call a new coroutine inside this coroutine
+    jv_tid_t task = jv_spawn(dummy, NULL);
+    while (n--) {
+        printf("[Routine %d] %d\n", id, n);
+        jv_yield;
+    }
+    jv_join(task);
 }
 
 int main(void)
@@ -110,14 +123,12 @@ int main(void)
     jv_init();
 
     for (i = 0; i < ntask; ++i) {
-        count = (i+1) * 10;
-        tids[i] = jv_spawn(counter, jv_args( _(count) ));
+        count = (i+1) * 5;
+        tids[i] = jv_spawn(counter, jv_args( _(i), _(count) ));
     }
 
-    for (i = 0; i < ntask; ++i) {
+    for (i = 0; i < ntask; ++i)
         jv_join(tids[i]);
-        putchar('\n');
-    }
 
     jv_end();
     return 0;

@@ -1,7 +1,8 @@
 #include <sys/mman.h>
 
 #define JV_ARGS_LIMIT 6
-#define JV_STACK_SIZE 4096
+#define JV_TASK_STACK_SIZE 4096
+#define JV_STACK_SIZE (0x10000)
 
 #define jv_args(...) \
     ((void*[JV_ARGS_LIMIT]){ __VA_ARGS__ })
@@ -29,11 +30,13 @@ enum {
 };
 
 enum {
-    JV_STATE_NEW,
-    JV_STATE_READY,
-    JV_STATE_WAITING,
-    JV_STATE_TERMINATED
+    JV_STATE_NEW        = 1 << 0,
+    JV_STATE_READY      = 1 << 1,
+    JV_STATE_WAITING    = 1 << 2,
+    JV_STATE_ALONE       = 1 << 3
+    // JV_STATE_TERMINATED = 1 << 4
 };
+#define JV_TLIST_COUNT (JV_STATE_ALONE + 1)
 
 enum {
     JV_R_RBX,
@@ -51,13 +54,19 @@ enum {
 typedef struct jv_task {
     // Order of these fields matter. Don't change them!
     uintptr_t regs[JV_R_COUNT];
-    uintptr_t first_run;
+    uintptr_t state;
     void *args[JV_ARGS_LIMIT];
 
-    long state, awaitable, event;
-    struct jv_task *next, *prev;
+    // non-ABI fields
+    long wait_on, event;
     unsigned char *stack;
+    struct jv_task *prev, *next, *parent;
 } jv_task_t;
+
+typedef struct jv_tlist {
+    jv_task_t *head;
+    jv_task_t *tail;
+} jv_tlist_t;
 
 // The task id is a unique identifier of a task. You MUST NEVER
 // use/reuse the same task id after it's termination as JV itself
@@ -68,15 +77,63 @@ typedef uintptr_t jv_tid_t;
 static mempool_t stack_pool;
 static mempool_t task_pool;
 
-static size_t actives  = 0;
 static arena_t *gmem   = NULL;
-static jv_task_t *init = NULL; // like init (pid 1) process in Linux
+static jv_task_t *init = NULL;
 static jv_task_t *curr = NULL;
-static jv_task_t *tail = NULL;
+static unsigned char *stack = NULL;
+static jv_tlist_t ls[JV_TLIST_COUNT];
 
 
 extern void jv_task_store(jv_task_t *task, void *rsp, void *rip);
 extern void jv_task_restore(jv_task_t *task);
+
+static jv_task_t *jv_tlist_pop_head(jv_tlist_t *q)
+{
+    jv_task_t *t = q->head;
+    if (t) {
+        q->head = t->next;
+        if (t->next)
+            t->next->prev = NULL;
+        t->next = NULL;
+        t->state |= JV_STATE_ALONE;
+    }
+    return t;
+}
+
+static void jv_tlist_remove(jv_tlist_t *q, jv_task_t *t) {
+    if (t->prev)
+        t->prev->next = t->next;
+    else
+        q->head = t->next;
+
+    if (t->next)
+        t->next->prev = t->prev;
+    else
+        q->tail = t->prev;
+
+    t->state |= JV_STATE_ALONE;
+    t->prev = t->next = NULL;
+}
+
+static void jv_tlist_push(jv_tlist_t *q, jv_task_t *t)
+{
+    if (!q->head) {
+        q->head = q->tail = t;
+        t->next = t->prev = NULL;
+        return;
+    }
+    t->next = NULL;
+    t->prev = q->tail;
+    q->tail->next = t;
+    q->tail = t;
+}
+
+static inline void jv_task_change_state(jv_task_t *t, int state)
+{
+    t->prev = t->next = NULL;
+    t->state = state;
+    jv_tlist_push(&ls[state], t);
+}
 
 int __attribute__((naked))
 jv_await(long awaitable, long event)
@@ -94,110 +151,113 @@ jv_await(long awaitable, long event)
         : "r10", "r11", "rdi", "rsi", "rdx" );
 
     __asm__ __volatile__ (
+        "movq %0,    %%rsp\n"
         "movq %%r10, %%rdi\n"
         "movq %%r11, %%rsi\n"
         "jmp jv_task_switch"
         :
-        :
+        : "m" (stack)
         : "rdi", "rsi");
 }
 
 void jv_task_switch(long awaitable, long event)
 {
     long i;
-    if (event == JV_TASK_TERMINATE) {
-        curr->state = JV_STATE_WAITING;
-        curr->awaitable = awaitable;
+    jv_task_t *tmp;
+
+    if (event > 0) {
+        curr->wait_on = awaitable;
         curr->event = event;
-        curr = curr->next;
-    }
-    for (i = 0; i < actives; ++i) {
-        if (curr->state == JV_STATE_READY)
-            break;
-        curr = curr->next;
-    }
-    if (i == actives)
+        if (curr->state & JV_STATE_READY && !(curr->state & JV_STATE_ALONE))
+            jv_tlist_remove(&ls[JV_STATE_READY], curr);
+        jv_task_change_state(curr, JV_STATE_WAITING);
+    } else if (curr && (curr->state & JV_STATE_ALONE))
+       jv_task_change_state(curr, JV_STATE_READY);
+
+    curr = jv_tlist_pop_head(&ls[JV_STATE_READY]);
+    if (curr == NULL)
         curr = init;
+
+    __asm__ __volatile__ ( "movq %%rsp, %0\n" : "=m" (stack));
+
     jv_task_restore(curr);
 }
 
-void jv_task_end(void)
+static void __attribute__((naked)) jv_task_end(void)
 {
-    jv_task_t *ended = curr, *tmp;
-    tmp = ended->next;
-    // tmp = ended->prev->next = ended->next;
-    // ended->next->prev = ended->prev;
-    // actives--;
+    __asm__ __volatile__ (
+        "movq %0, %%rsp\n"
+        "jmp  jv_task_end_\n"
+        :
+        : "m" (stack));
+}
 
-    long i;
-    for (i = 0; i < actives; ++i) {
-        if (tmp->awaitable == (jv_tid_t)ended) {
-            assert((uintptr_t)tmp == (uintptr_t)init);
-            tmp->state = JV_STATE_READY;
-            tmp->awaitable = 0;
+void jv_task_end_(void)
+{
+    jv_task_t *tmp;
+
+    tmp = ls[JV_STATE_WAITING].head;
+    while (tmp) {
+        if (tmp->wait_on == (jv_tid_t)curr) {
+            jv_tlist_remove(&ls[JV_STATE_WAITING], tmp);
+            jv_task_change_state(tmp, JV_STATE_READY);
+            tmp->wait_on = 0;
             tmp->event = 0;
             break;
         }
         tmp = tmp->next;
     }
 
-    // memset(ended->stack, 0, JV_STACK_SIZE);
-    // mempool_put(&stack_pool, ended->stack);
-    // mempool_put(&task_pool, ended);
-    ended->state = JV_STATE_TERMINATED;
+    memset(curr->stack, 0, JV_TASK_STACK_SIZE);
+    mempool_put(&stack_pool, curr->stack);
+    mempool_put(&task_pool, curr);
 
-    curr = tmp;
+    curr = NULL;
     jv_task_switch(0, JV_NONE);
-}
-
-int jv_has_active(void)
-{
-    return (actives > 0);
 }
 
 int jv_init(void)
 {
     arena_config_t aconf = ARENA_DEFAULT_CONFIG;
     aconf.reserve = ARENA_MB(64ULL);
-    aconf.commit  = ARENA_MB(4ULL);
+    aconf.commit  = ARENA_MB(16ULL);
     if ( !(gmem = arena_new(&aconf)))
          return 0;
 
-    mempool_init(&task_pool, gmem, sizeof(jv_task_t));
-    mempool_init(&stack_pool, gmem, JV_STACK_SIZE);
+    stack = (unsigned char*) arena_alloc(gmem, JV_STACK_SIZE) + JV_STACK_SIZE - 1;
 
-    actives = 1;
+    memset(ls, 0, sizeof(ls));
+    mempool_init(&task_pool, gmem, sizeof(jv_task_t));
+    mempool_init(&stack_pool, gmem, JV_TASK_STACK_SIZE);
+
     init = curr = mempool_get(&task_pool);
+    memset(curr, 0, sizeof(*curr));
+
     curr->state = JV_STATE_READY;
-    tail = curr;
-    tail->prev = tail->next = curr;
-    return 1;
+    jv_tlist_push(&ls[JV_STATE_READY], curr);
+    return (jv_tid_t)curr;
 }
 
 jv_tid_t jv_spawn(void *fn, void *args[JV_ARGS_LIMIT])
 {
     jv_task_t *new = mempool_get(&task_pool);
+    memset(new, 0, sizeof(*new));
     new->stack = mempool_get(&stack_pool);
 
     new->regs[JV_R_RIP] = (uintptr_t) fn;
+    new->state = JV_STATE_READY;
     if (args) {
-        new->first_run = 1;
+        new->state |= JV_STATE_NEW;
         memmove(new->args, args, sizeof(void*) * JV_ARGS_LIMIT);
     }
+    jv_tlist_push(&ls[JV_STATE_READY], new);
 
-    uintptr_t *rsp = (uintptr_t*) &new->stack[JV_STACK_SIZE];
+    uintptr_t *rsp = (uintptr_t*) &new->stack[JV_TASK_STACK_SIZE];
     // store the return address for coroutine's `ret` instruction
     *(--rsp) = (uintptr_t) jv_task_end;
     new->regs[JV_R_RSP] = (uintptr_t) rsp;
-    new->state = JV_STATE_READY;
 
-    new->prev = tail;
-    new->next = tail->next;
-
-    tail->next = new;
-    tail = new;
-
-    actives++;
+    new->parent = curr;
     return (jv_tid_t)new;
 }
 

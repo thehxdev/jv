@@ -35,11 +35,9 @@ jv_task_restore:
     # use r10 as a helper register to setup arguments
     movq    %rdi, %r10
 
-    # If `first_run` field in `jv_task_t` is true, load
-    # the function's arguments befor jumping there.
-    # Otherwise just do the call.
-    cmpq    $1, 0x40(%r10)
-    jne     .skip_args
+    movq    0x40(%r10), %r11
+    andq    $1, %r11
+    jz     .skip_args
 
     # store address of `args` field in jv_task_t to %rax
     leaq    0x48(%r10), %rax
@@ -51,9 +49,7 @@ jv_task_restore:
     movq    0x18(%rax), %rcx
     movq    0x20(%rax), %r8
     movq    0x28(%rax), %r9
-
-    # set `first_run` to 0 and restore %r10
-    movq    $0, 0x40(%r10)
+    xorq    $1, 0x40(%r10)
 
 .skip_args:
     # return 0 (for now) as the return value of jv_await
