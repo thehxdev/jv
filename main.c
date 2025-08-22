@@ -118,9 +118,17 @@ async void counter(long id, long n)
 
 int main(void)
 {
+    arena_t *arena;
     long i, count;
     jv_tid_t tids[ntask];
-    jv_init();
+
+    arena_config_t aconf = ARENA_DEFAULT_CONFIG;
+    aconf.reserve = ARENA_MB(64ULL);
+    aconf.commit  = ARENA_MB(16ULL);
+    if ( !(arena = arena_new(&aconf)))
+         return 1;
+
+    jv_init(arena);
 
     for (i = 0; i < ntask; ++i) {
         count = (i+1) * 5;
@@ -131,6 +139,7 @@ int main(void)
         jv_join(tids[i]);
 
     jv_end();
+    arena_destroy(arena);
     return 0;
 }
 

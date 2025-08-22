@@ -49,9 +49,9 @@ jv_task_restore:
     movq    0x18(%rax), %rcx
     movq    0x20(%rax), %r8
     movq    0x28(%rax), %r9
-    xorq    $1, 0x40(%r10)
 
 .skip_args:
+    movq    $8, 0x40(%r10)      # set JV_STATE_RUNNING
     # return 0 (for now) as the return value of jv_await
     xorq    %rax, %rax
     jmp     *0x38(%r10)

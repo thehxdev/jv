@@ -33,10 +33,10 @@ enum {
     JV_STATE_NEW        = 1 << 0,
     JV_STATE_READY      = 1 << 1,
     JV_STATE_WAITING    = 1 << 2,
-    JV_STATE_ALONE       = 1 << 3
+    JV_STATE_RUNNING    = 1 << 3
     // JV_STATE_TERMINATED = 1 << 4
 };
-#define JV_TLIST_COUNT (JV_STATE_ALONE + 1)
+#define JV_TLIST_COUNT (JV_STATE_WAITING + 1)
 
 enum {
     JV_R_RBX,
@@ -95,7 +95,6 @@ static jv_task_t *jv_tlist_pop_head(jv_tlist_t *q)
         if (t->next)
             t->next->prev = NULL;
         t->next = NULL;
-        t->state |= JV_STATE_ALONE;
     }
     return t;
 }
@@ -111,7 +110,6 @@ static void jv_tlist_remove(jv_tlist_t *q, jv_task_t *t) {
     else
         q->tail = t->prev;
 
-    t->state |= JV_STATE_ALONE;
     t->prev = t->next = NULL;
 }
 
@@ -168,18 +166,15 @@ void jv_task_switch(long awaitable, long event)
     if (event > 0) {
         curr->wait_on = awaitable;
         curr->event = event;
-        if (curr->state & JV_STATE_READY && !(curr->state & JV_STATE_ALONE))
-            jv_tlist_remove(&ls[JV_STATE_READY], curr);
         jv_task_change_state(curr, JV_STATE_WAITING);
-    } else if (curr && (curr->state & JV_STATE_ALONE))
-       jv_task_change_state(curr, JV_STATE_READY);
+    } else if (curr)
+        jv_task_change_state(curr, JV_STATE_READY);
 
     curr = jv_tlist_pop_head(&ls[JV_STATE_READY]);
     if (curr == NULL)
         curr = init;
 
     __asm__ __volatile__ ( "movq %%rsp, %0\n" : "=m" (stack));
-
     jv_task_restore(curr);
 }
 
@@ -216,14 +211,9 @@ void jv_task_end_(void)
     jv_task_switch(0, JV_NONE);
 }
 
-int jv_init(void)
+int jv_init(arena_t *arena)
 {
-    arena_config_t aconf = ARENA_DEFAULT_CONFIG;
-    aconf.reserve = ARENA_MB(64ULL);
-    aconf.commit  = ARENA_MB(16ULL);
-    if ( !(gmem = arena_new(&aconf)))
-         return 0;
-
+    gmem = arena;
     stack = (unsigned char*) arena_alloc(gmem, JV_STACK_SIZE) + JV_STACK_SIZE - 1;
 
     memset(ls, 0, sizeof(ls));
@@ -233,8 +223,7 @@ int jv_init(void)
     init = curr = mempool_get(&task_pool);
     memset(curr, 0, sizeof(*curr));
 
-    curr->state = JV_STATE_READY;
-    jv_tlist_push(&ls[JV_STATE_READY], curr);
+    curr->state = JV_STATE_RUNNING;
     return (jv_tid_t)curr;
 }
 
@@ -263,7 +252,6 @@ jv_tid_t jv_spawn(void *fn, void *args[JV_ARGS_LIMIT])
 
 void jv_end(void)
 {
-    arena_destroy(gmem);
 }
 
 jv_tid_t jv_self(void) {
