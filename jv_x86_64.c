@@ -1,21 +1,38 @@
-#define JV_STACK_SIZE 4096
+#include <sys/mman.h>
+
 #define JV_ARGS_LIMIT 6
+#define JV_STACK_SIZE 4096
 
 #define jv_args(...) \
     ((void*[JV_ARGS_LIMIT]){ __VA_ARGS__ })
+
+#define jv_yield     jv_await(-1, JV_NONE)
+#define jv_join(tid) jv_await((tid), JV_TASK_TERMINATE)
 
 #define jv_concat_(A, B) A##B
 #define jv_concat(A, B) jv_concat_(A, B)
 #define jv_static_assert(cond, id) \
     extern char jv_concat(id, __LINE__)[ ((cond)) ? 1 : -1 ]
 
-// static assert for sizeof(void*)
+// static assert to make sure that sizeof(void*) == 8
 jv_static_assert(sizeof(void*) == 8, assert_sizeof_pointer);
 
 enum {
+    // just return to event-loop and try to continue other tasks
     JV_NONE,
+    // wait for a file descriptor to become readable
     JV_READ,
-    JV_WRITE
+    // wait for a file descriptor to become writable
+    JV_WRITE,
+    // wait for a task to terminate
+    JV_TASK_TERMINATE
+};
+
+enum {
+    JV_STATE_NEW,
+    JV_STATE_READY,
+    JV_STATE_WAITING,
+    JV_STATE_TERMINATED
 };
 
 enum {
@@ -27,72 +44,152 @@ enum {
     JV_R_R15,
     JV_R_RSP,
     JV_R_RIP,
+
     JV_R_COUNT
 };
 
-typedef struct jv_context {
-    // this field MUST be the first in this struct
+typedef struct jv_task {
+    // Order of these fields matter. Don't change them!
     uintptr_t regs[JV_R_COUNT];
     uintptr_t first_run;
     void *args[JV_ARGS_LIMIT];
-    struct jv_context *next, *prev;
-    unsigned char stack_end[JV_STACK_SIZE];
-} jv_context_t;
 
-static size_t actives     = 0;
-static jv_context_t *curr = NULL;
-static jv_context_t *tail = NULL;
+    long state, awaitable, event;
+    struct jv_task *next, *prev;
+    unsigned char *stack;
+} jv_task_t;
 
-extern void jv_wait_io(int fd, int events);
-// extern void jv_yield(void);
-#define jv_yield() jv_wait_io(-1, JV_NONE)
+// The task id is a unique identifier of a task. You MUST NEVER
+// use/reuse the same task id after it's termination as JV itself
+// may reuse the same id for new tasks.
+typedef uintptr_t jv_tid_t;
 
-extern void jv_context_store(jv_context_t *ctx, void *rsp, void *rip);
-extern void jv_context_restore(jv_context_t *ctx);
 
-void jv_context_switch(void *rsp, void *rip) {
-    jv_context_store(curr, rsp, rip);
-    // This is where the magic happens. Here we can decide which coroutine
-    // to continue next.
-    curr = curr->next;
-    jv_context_restore(curr);
+static mempool_t stack_pool;
+static mempool_t task_pool;
+
+static size_t actives  = 0;
+static arena_t *gmem   = NULL;
+static jv_task_t *init = NULL; // like init (pid 1) process in Linux
+static jv_task_t *curr = NULL;
+static jv_task_t *tail = NULL;
+
+
+extern void jv_task_store(jv_task_t *task, void *rsp, void *rip);
+extern void jv_task_restore(jv_task_t *task);
+
+int __attribute__((naked))
+jv_await(long awaitable, long event)
+{
+    // call jv_task_store
+    __asm__ __volatile__ (
+        "movq  %%rdi, %%r10\n"
+        "movq  %%rsi, %%r11\n"
+        "movq  %0, %%rdi\n"
+        "leaq 8(%%rsp), %%rsi\n"
+        "movq  (%%rsp), %%rdx\n"
+        "call  jv_task_store\n"
+        :
+        : "m" (curr)
+        : "r10", "r11", "rdi", "rsi", "rdx" );
+
+    __asm__ __volatile__ (
+        "movq %%r10, %%rdi\n"
+        "movq %%r11, %%rsi\n"
+        "jmp jv_task_switch"
+        :
+        :
+        : "rdi", "rsi");
 }
 
-void jv_context_end(void) {
-    actives--;
-    jv_context_t *ended = curr;
-    ended->prev->next = ended->next;
-    ended->next->prev = ended->prev;
-    curr = ended->next;
-    free(ended);
-    jv_context_restore(curr);
+void jv_task_switch(long awaitable, long event)
+{
+    long i;
+    if (event == JV_TASK_TERMINATE) {
+        curr->state = JV_STATE_WAITING;
+        curr->awaitable = awaitable;
+        curr->event = event;
+        curr = curr->next;
+    }
+    for (i = 0; i < actives; ++i) {
+        if (curr->state == JV_STATE_READY)
+            break;
+        curr = curr->next;
+    }
+    if (i == actives)
+        curr = init;
+    jv_task_restore(curr);
 }
 
-int jv_has_active(void) {
+void jv_task_end(void)
+{
+    jv_task_t *ended = curr, *tmp;
+    tmp = ended->next;
+    // tmp = ended->prev->next = ended->next;
+    // ended->next->prev = ended->prev;
+    // actives--;
+
+    long i;
+    for (i = 0; i < actives; ++i) {
+        if (tmp->awaitable == (jv_tid_t)ended) {
+            assert((uintptr_t)tmp == (uintptr_t)init);
+            tmp->state = JV_STATE_READY;
+            tmp->awaitable = 0;
+            tmp->event = 0;
+            break;
+        }
+        tmp = tmp->next;
+    }
+
+    // memset(ended->stack, 0, JV_STACK_SIZE);
+    // mempool_put(&stack_pool, ended->stack);
+    // mempool_put(&task_pool, ended);
+    ended->state = JV_STATE_TERMINATED;
+
+    curr = tmp;
+    jv_task_switch(0, JV_NONE);
+}
+
+int jv_has_active(void)
+{
     return (actives > 0);
 }
 
-int jv_init(void) {
-    curr = calloc(1, sizeof(*curr));
-    if (!curr)
-        return 0;
+int jv_init(void)
+{
+    arena_config_t aconf = ARENA_DEFAULT_CONFIG;
+    aconf.reserve = ARENA_MB(64ULL);
+    aconf.commit  = ARENA_MB(4ULL);
+    if ( !(gmem = arena_new(&aconf)))
+         return 0;
+
+    mempool_init(&task_pool, gmem, sizeof(jv_task_t));
+    mempool_init(&stack_pool, gmem, JV_STACK_SIZE);
+
+    actives = 1;
+    init = curr = mempool_get(&task_pool);
+    curr->state = JV_STATE_READY;
     tail = curr;
     tail->prev = tail->next = curr;
     return 1;
 }
 
-void jv_run(void *fn, void *args[JV_ARGS_LIMIT]) {
-    jv_context_t *new = calloc(1, sizeof(*new));
+jv_tid_t jv_spawn(void *fn, void *args[JV_ARGS_LIMIT])
+{
+    jv_task_t *new = mempool_get(&task_pool);
+    new->stack = mempool_get(&stack_pool);
+
     new->regs[JV_R_RIP] = (uintptr_t) fn;
     if (args) {
         new->first_run = 1;
-        memcpy(new->args, args, sizeof(void*) * JV_ARGS_LIMIT);
+        memmove(new->args, args, sizeof(void*) * JV_ARGS_LIMIT);
     }
 
-    uintptr_t *rsp = (uintptr_t*) &new->stack_end[JV_STACK_SIZE];
+    uintptr_t *rsp = (uintptr_t*) &new->stack[JV_STACK_SIZE];
     // store the return address for coroutine's `ret` instruction
-    *(--rsp) = (uintptr_t) jv_context_end;
+    *(--rsp) = (uintptr_t) jv_task_end;
     new->regs[JV_R_RSP] = (uintptr_t) rsp;
+    new->state = JV_STATE_READY;
 
     new->prev = tail;
     new->next = tail->next;
@@ -101,8 +198,14 @@ void jv_run(void *fn, void *args[JV_ARGS_LIMIT]) {
     tail = new;
 
     actives++;
+    return (jv_tid_t)new;
 }
 
-void jv_end(void) {
-    free(curr);
+void jv_end(void)
+{
+    arena_destroy(gmem);
+}
+
+jv_tid_t jv_self(void) {
+    return (jv_tid_t)curr;
 }

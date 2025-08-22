@@ -1,18 +1,30 @@
-#include <stdio.h>
+#include <unistd.h>
+#include <signal.h>
+#include <assert.h>
+#include <unistd.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <fcntl.h>
 
 // helper macro to pass a non-pointer argument
 #define _(v) ((void*)(v))
 
+#define LISTEN_BACKLOG 128
 #define BUFFER_SIZE 1024
 #define async __attribute__((noinline))
 
-async void echo_routine(int clientfd) {
+static sig_atomic_t running = 1;
+
+async void echo_routine(int clientfd)
+{
     int status;
     ssize_t nread, nwritten;
     unsigned char buf[BUFFER_SIZE];
 
     while (1) {
-        status = jv_wait_io(clientfd, JV_READ);
+        // Wait until `clientfd` becomes readable
+        status = jv_await(clientfd, JV_READ);
         if (!status) {
             // handle IO error
             break;
@@ -23,7 +35,8 @@ async void echo_routine(int clientfd) {
             break;
         }
 
-        status = jv_wait_io(clientfd, JV_WRITE);
+        // Wait until `clientfd` becomes writable
+        status = jv_await(clientfd, JV_WRITE);
         if (!status) {
             // hanlde IO error
             break;
@@ -33,18 +46,35 @@ async void echo_routine(int clientfd) {
             // handle write error
             break;
         }
-
-        jv_yield();
     }
 }
 
-async void __main(void) {
-    int serverfd, clientfd, status;
+async void __main(void)
+{
+    long serverfd, clientfd, status;
+    struct sockaddr_in serveraddr;
 
-    // socket, bind, listen, etc.
+    serveraddr.sin_family = AF_INET;
+    serveraddr.sin_port   = htons(8080);
+    serveraddr.sin_addr.s_addr = INADDR_ANY;
+
+    serverfd = socket(serveraddr.sin_family, SOCK_STREAM | SOCK_NONBLOCK, IPPROTO_TCP);
+    if (serverfd == -1) {
+        perror("socket");
+        return;
+    }
+    if (bind(serverfd, (struct sockaddr*) &serveraddr, sizeof(serveraddr)) == -1) {
+        perror("bind");
+        return;
+    }
+    if (listen(serverfd, LISTEN_BACKLOG) == -1) {
+        perror("listen");
+        return;
+    }
 
     while (running) {
-        status = jv_wait_io(serverfd, JV_READ);
+        // Wait until `serverfd` becomes readable (new connection arrived)
+        status = jv_await(serverfd, JV_READ);
         if (!status) {
             // handle io error
             break;
@@ -54,20 +84,42 @@ async void __main(void) {
             perror("accept");
             break;
         }
-        jv_run(echo_routine, jv_args( _(clientfd) ));
-        jv_yield();
+        // spawn a new task to handle the new client
+        jv_spawn(echo_routine, jv_args( _(clientfd) ));
     }
 
     close(serverfd);
 }
 
-int main(void) {
+#define ntask 3
+
+async void counter(long n)
+{
+    if (n < 0)
+        return;
+    while (n--) {
+        printf("%d ", n);
+        jv_yield;
+    }
+}
+
+int main(void)
+{
+    long i, count;
+    jv_tid_t tids[ntask];
     jv_init();
 
-    // only return here if `jv_end` is called
-    // or `__main` has returned
-    jv_run_blocking(__main, NULL);
+    for (i = 0; i < ntask; ++i) {
+        count = (i+1) * 10;
+        tids[i] = jv_spawn(counter, jv_args( _(count) ));
+    }
+
+    for (i = 0; i < ntask; ++i) {
+        jv_join(tids[i]);
+        putchar('\n');
+    }
 
     jv_end();
     return 0;
 }
+
