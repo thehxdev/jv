@@ -15,7 +15,7 @@
 #define async __attribute__((noinline))
 
 #if 0
-// This section if unfinished
+// This section is unfinished
 static sig_atomic_t running = 1;
 
 async void echo_routine(int clientfd)
@@ -92,7 +92,7 @@ async void __main(void)
 
     close(serverfd);
 }
-#endif
+#endif // end of unfinished section
 
 #define ntask 2
 
@@ -120,8 +120,11 @@ int main(void)
 {
     arena_t *arena;
     long i, count;
+
+    // an array of task ids
     jv_tid_t tids[ntask];
 
+    // create an arena allocator
     arena_config_t aconf = ARENA_DEFAULT_CONFIG;
     aconf.reserve = ARENA_MB(64ULL);
     aconf.commit  = ARENA_MB(16ULL);
@@ -130,14 +133,17 @@ int main(void)
 
     jv_init(arena);
 
+    // create tasks
     for (i = 0; i < ntask; ++i) {
         count = (i+1) * 5;
         tids[i] = jv_spawn(counter, jv_args( _(i), _(count) ));
     }
 
+    // wait for them to finish
     for (i = 0; i < ntask; ++i)
         jv_join(tids[i]);
 
+    // cleanup
     jv_end();
     arena_destroy(arena);
     return 0;
