@@ -2,7 +2,7 @@
 
 #define JV_ARGS_LIMIT 6
 #define JV_TASK_STACK_SIZE 4096
-#define JV_STACK_SIZE (0x10000)
+#define JV_STACK_SIZE JV_TASK_STACK_SIZE
 
 #define jv_args(...) \
     ((void*[JV_ARGS_LIMIT]){ __VA_ARGS__ })
