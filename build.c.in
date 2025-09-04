@@ -18,5 +18,5 @@
 
 #include "base/memory/arena.c"
 #include "base/memory/mempool.c"
-#include "arch/x86_64/jv.c"
+#include "arch/@ARCH@/jv.c"
 #include "main.c"

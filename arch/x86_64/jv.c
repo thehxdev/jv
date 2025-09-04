@@ -1,5 +1,3 @@
-#include <sys/mman.h>
-
 #define JV_ARGS_LIMIT 6
 #define JV_TASK_STACK_SIZE 4096
 #define JV_STACK_SIZE JV_TASK_STACK_SIZE
@@ -19,11 +17,11 @@
 jv_static_assert(sizeof(void*) == 8, assert_sizeof_pointer);
 
 enum {
-    // just return to event-loop and try to continue other tasks
+    // just return to event-loop and continue other tasks
     JV_NONE,
-    // wait for a file descriptor to become readable
+    // wait for a file descriptor to become readable (not implemented)
     JV_READ,
-    // wait for a file descriptor to become writable
+    // wait for a file descriptor to become writable (not implemented)
     JV_WRITE,
     // wait for a task to terminate
     JV_TASK_TERMINATE
@@ -192,8 +190,8 @@ void jv_task_switch(long awaitable, long event)
         curr->event = event;
         jv_task_change_state(curr, JV_STATE_WAITING);
     } else if (curr) {
-        // if there was no events (routine called jv_yield), just
-        // add the task to read list
+        // if there was no events (task called jv_yield), just
+        // add the task to ready list
         jv_task_change_state(curr, JV_STATE_READY);
     }
 
@@ -202,15 +200,17 @@ void jv_task_switch(long awaitable, long event)
     // ready ones to ready list. the OS specific way of doing async
     // IO can be abstracted.
 
-    // get next ready to run task from ready list
+    // get next ready to run task from ready list.
     curr = jv_tlist_pop_head(&ls[JV_STATE_READY]);
     if (curr == NULL) {
         // if there was no task to continue, fallback to initial
         // routine (the routine that called `jv_init`)
         curr = init;
     }
+
     // save library's stack pointer
-    __asm__ __volatile__ ( "movq %%rsp, %0\n" : "=m" (stack));
+    __asm__ __volatile__ ( "movq %%rsp, %0\n" : "=m" (stack) );
+
     jv_task_restore(curr);
 }
 

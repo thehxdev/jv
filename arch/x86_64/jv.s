@@ -1,4 +1,4 @@
-    .file "x86_64_jv.s"
+    .file "jv.s"
     .section .text
 
     .align 8
